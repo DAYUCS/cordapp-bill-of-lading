@@ -7,15 +7,12 @@ import com.example.flow.ExampleFlow.Initiator
 import com.example.state.BLState
 import net.corda.core.contracts.Command
 import net.corda.core.contracts.TransactionType
-import net.corda.core.flows.FlowLogic
-import net.corda.core.flows.InitiatedBy
-import net.corda.core.flows.InitiatingFlow
-import net.corda.core.flows.StartableByRPC
+import net.corda.core.contracts.requireThat
+import net.corda.core.flows.*
 import net.corda.core.identity.Party
 import net.corda.core.transactions.SignedTransaction
+import net.corda.core.transactions.TransactionBuilder
 import net.corda.core.utilities.ProgressTracker
-import net.corda.core.utilities.unwrap
-import net.corda.flows.FinalityFlow
 
 /**
  * This flow allows two parties (the [Initiator] and the [Acceptor]) to come to an agreement about the bl encapsulated
@@ -32,7 +29,7 @@ object ExampleFlow {
     @InitiatingFlow
     @StartableByRPC
     class Initiator(val blState: BLState,
-                    val counterParty: Party): FlowLogic<SignedTransaction>() {
+                    val otherParty: Party): FlowLogic<SignedTransaction>() {
         /**
          * The progress tracker checkpoints each stage of the flow and outputs the specified messages when each
          * checkpoint is reached in the code. See the 'progressTracker.currentStep' expressions within the call() function.
@@ -41,13 +38,19 @@ object ExampleFlow {
             object GENERATING_TRANSACTION : ProgressTracker.Step("Generating transaction based on new bl.")
             object VERIFYING_TRANSACTION : ProgressTracker.Step("Verifying contract constraints.")
             object SIGNING_TRANSACTION : ProgressTracker.Step("Signing transaction with our private key.")
-            object SENDING_TRANSACTION : ProgressTracker.Step("Sending proposed transaction to counterParty for review.")
+            object GATHERING_SIGS : ProgressTracker.Step("Gathering the counterparty's signature.") {
+                override fun childProgressTracker() = CollectSignaturesFlow.tracker()
+            }
+            object FINALISING_TRANSACTION : ProgressTracker.Step("Obtaining notary signature and recording transaction.") {
+                override fun childProgressTracker() = FinalityFlow.tracker()
+            }
 
             fun tracker() = ProgressTracker(
                     GENERATING_TRANSACTION,
                     VERIFYING_TRANSACTION,
                     SIGNING_TRANSACTION,
-                    SENDING_TRANSACTION
+                    GATHERING_SIGS,
+                    FINALISING_TRANSACTION
             )
         }
 
@@ -65,88 +68,41 @@ object ExampleFlow {
             progressTracker.currentStep = GENERATING_TRANSACTION
             // Generate an unsigned transaction.
             val txCommand = Command(BLContract.Commands.Issue(), listOf(blState.exporter.owningKey, blState.shippingCompany.owningKey))
-            val unsignedTx = TransactionType.General.Builder(notary).withItems(blState, txCommand)
+            val txBuilder = TransactionBuilder(TransactionType.General, notary).withItems(blState, txCommand)
 
             // Stage 2.
             progressTracker.currentStep = VERIFYING_TRANSACTION
             // Verify that the transaction is valid.
-            unsignedTx.toWireTransaction().toLedgerTransaction(serviceHub).verify()
+            txBuilder.toWireTransaction().toLedgerTransaction(serviceHub).verify()
 
             // Stage 3.
             progressTracker.currentStep = SIGNING_TRANSACTION
-            val partSignedTx = serviceHub.signInitialTransaction(unsignedTx)
+            val partSignedTx = serviceHub.signInitialTransaction(txBuilder)
 
             // Stage 4.
-            progressTracker.currentStep = SENDING_TRANSACTION
-            // Send the state across the wire to the designated counterparty.
-            // -----------------------
-            // Flow jumps to Acceptor.
-            // -----------------------
-            send(counterParty, partSignedTx)
+            progressTracker.currentStep = GATHERING_SIGS
+            // Send the state to the counterparty, and receive it back with their signature.
+            val fullySignedTx = subFlow(CollectSignaturesFlow(partSignedTx, GATHERING_SIGS.childProgressTracker()))
 
-            return waitForLedgerCommit(partSignedTx.id)
+            // Stage 5.
+            progressTracker.currentStep = FINALISING_TRANSACTION
+            // Notarise and record the transaction in both parties' vaults.
+            return subFlow(FinalityFlow(fullySignedTx, FINALISING_TRANSACTION.childProgressTracker())).single()
         }
     }
 
-    @InitiatedBy(ExampleFlow.Initiator::class)
-    class Acceptor(val countyParty: Party) : FlowLogic<Unit>() {
-        companion object {
-            object RECEIVING_TRANSACTION : ProgressTracker.Step("Receiving proposed transaction from exporter.")
-            object VERIFYING_TRANSACTION : ProgressTracker.Step("Verifying signatures and contract constraints.")
-            object SIGNING_TRANSACTION : ProgressTracker.Step("Signing proposed transaction with our private key.")
-            object FINALISING_TRANSACTION : ProgressTracker.Step("Obtaining notary signature and recording transaction.")
-
-            fun tracker() = ProgressTracker(
-                    RECEIVING_TRANSACTION,
-                    VERIFYING_TRANSACTION,
-                    SIGNING_TRANSACTION,
-                    FINALISING_TRANSACTION
-            )
-        }
-
-        override val progressTracker = tracker()
-
+    @InitiatedBy(Initiator::class)
+    class Acceptor(val otherParty: Party) : FlowLogic<SignedTransaction>() {
         @Suspendable
-        override fun call() {
-            // Prep.
-            // Obtain a reference to our public key.
-            val publicKey = serviceHub.legalIdentityKey
-            // Obtain a reference to the notary we want to use and its public key.
-            val notary = serviceHub.networkMapCache.notaryNodes.single().notaryIdentity
-            val notaryPubKey = notary.owningKey
-
-            // Stage 5.
-            progressTracker.currentStep = RECEIVING_TRANSACTION
-            // All messages come off the wire as UntrustworthyData. You need to 'unwrap' them. This is where you
-            // validate what you have just received.
-            val partSignedTx = receive<SignedTransaction>(countyParty).unwrap { partSignedTx ->
-                // Stage 6.
-                progressTracker.currentStep = VERIFYING_TRANSACTION
-                // Check that the signature of the other party is valid.
-                // Our signature and the notary's signature are allowed to be omitted at this stage as this is only
-                // a partially signed transaction.
-                val wireTx = partSignedTx.verifySignatures(publicKey, notaryPubKey)
-                // Run the contract's verify function.
-                // We want to be sure that the agreed-upon bl is valid under the rules of the contract.
-                // To do this we need to run the contract's verify() function.
-                wireTx.toLedgerTransaction(serviceHub).verify()
-                // We've verified the signed transaction and return it.
-                partSignedTx
+        override fun call(): SignedTransaction {
+            val signTransactionFlow = object : SignTransactionFlow(otherParty) {
+                override fun checkTransaction(stx: SignedTransaction) = requireThat {
+                    val output = stx.tx.outputs.single().data
+                    "This must be an BL transaction." using (output is BLState)
+                }
             }
 
-            // Stage 7.
-            progressTracker.currentStep = SIGNING_TRANSACTION
-            // Sign the transaction with our key pair and add it to the transaction.
-            // We now have 'validation consensus'. We still require uniqueness consensus.
-            // Technically validation consensus for this type of agreement implicitly provides uniqueness consensus.
-            val mySig = serviceHub.createSignature(partSignedTx)
-            // Add our signature to the transaction.
-            val signedTx = partSignedTx + mySig
-
-            // Stage 8.
-            progressTracker.currentStep = FINALISING_TRANSACTION
-            // FinalityFlow() notarises the transaction and records it in each party's vault.
-            subFlow(FinalityFlow(signedTx, setOf(serviceHub.myInfo.legalIdentity, countyParty)))
+            return subFlow(signTransactionFlow)
         }
     }
 }

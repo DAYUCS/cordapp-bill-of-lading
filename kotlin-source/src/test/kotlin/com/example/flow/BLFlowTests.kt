@@ -3,7 +3,6 @@ package com.example.flow
 import com.example.model.BL
 import com.example.state.BLState
 import net.corda.core.contracts.TransactionVerificationException
-import net.corda.core.flows.FlowSessionException
 import net.corda.core.getOrThrow
 import net.corda.testing.node.MockNetwork
 import org.junit.After
@@ -80,7 +79,7 @@ class BLFlowTests {
         net.runNetwork()
 
         val signedTx = future.getOrThrow()
-        signedTx.verifySignatures(a.services.legalIdentityKey)
+        signedTx.verifySignaturesExcept(a.services.legalIdentityKey)
     }
 
     @Test
@@ -96,37 +95,7 @@ class BLFlowTests {
         net.runNetwork()
 
         val signedTx = future.getOrThrow()
-        signedTx.verifySignatures(b.services.legalIdentityKey)
-    }
-
-    @Test
-    fun `flow rejects BLs that are not signed by the exporter`() {
-        val state = BLState(
-                BL("",""),
-                c.info.legalIdentity,
-                b.info.legalIdentity,
-                a.info.legalIdentity,
-                b.info.legalIdentity)
-        val flow = ExampleFlow.Initiator(state, b.info.legalIdentity)
-        val future = a.services.startFlow(flow).resultFuture
-        net.runNetwork()
-
-        assertFailsWith<FlowSessionException> { future.getOrThrow() }
-    }
-
-    @Test
-    fun `flow rejects BLs that are not signed by the shipping company`() {
-        val state = BLState(
-                BL("",""),
-                a.info.legalIdentity,
-                c.info.legalIdentity,
-                b.info.legalIdentity,
-                c.info.legalIdentity)
-        val flow = ExampleFlow.Initiator(state, b.info.legalIdentity)
-        val future = a.services.startFlow(flow).resultFuture
-        net.runNetwork()
-
-        assertFailsWith<FlowSessionException> { future.getOrThrow() }
+        signedTx.verifySignaturesExcept(b.services.legalIdentityKey)
     }
 
     @Test
@@ -144,7 +113,7 @@ class BLFlowTests {
 
         // We check the recorded transaction in both vaults.
         for (node in listOf(a, b)) {
-            assertEquals(signedTx, node.storage.validatedTransactions.getTransaction(signedTx.id))
+            assertEquals(signedTx, node.services.validatedTransactions.getTransaction(signedTx.id))
         }
     }
 
@@ -163,7 +132,7 @@ class BLFlowTests {
 
         // We check the recorded transaction in both vaults.
         for (node in listOf(a, b)) {
-            val recordedTx = node.storage.validatedTransactions.getTransaction(signedTx.id)
+            val recordedTx = node.services.validatedTransactions.getTransaction(signedTx.id)
             val txOutputs = recordedTx!!.tx.outputs
             assert(txOutputs.size == 1)
 
