@@ -1,8 +1,10 @@
 package com.example.contract
 
 import com.example.state.BLState
-import net.corda.core.contracts.*
-import net.corda.core.crypto.SecureHash
+import net.corda.core.contracts.CommandData
+import net.corda.core.contracts.Contract
+import net.corda.core.contracts.requireSingleCommand
+import net.corda.core.contracts.requireThat
 import net.corda.core.transactions.LedgerTransaction
 
 /**
@@ -18,6 +20,11 @@ import net.corda.core.transactions.LedgerTransaction
  * All contracts must sub-class the [Contract] interface.
  */
 open class BLContract : Contract {
+    companion object {
+        @JvmStatic
+        val BL_CONTRACT_ID = "com.example.contract.BLContract"
+    }
+
     /**
      * The verify() function of all the states' contracts must not throw an exception for a transaction to be
      * considered valid.
@@ -58,10 +65,8 @@ open class BLContract : Contract {
      * This contract implements commands: Issue, Move.
      */
     interface Commands : CommandData {
-        class Issue : TypeOnlyCommandData(), Commands
-        class Move : TypeOnlyCommandData(), Commands
+        class Issue : Commands
+        class Move : Commands
     }
 
-    /** This is a reference to the underlying legal contract template and associated parameters. */
-    override val legalContractReference: SecureHash = SecureHash.sha256("bl contract template and params")
 }

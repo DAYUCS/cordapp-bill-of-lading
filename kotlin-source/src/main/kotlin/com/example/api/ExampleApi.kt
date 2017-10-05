@@ -4,25 +4,25 @@ import com.example.flow.ExampleFlow
 import com.example.flow.ShippingFlow
 import com.example.model.BL
 import com.example.state.BLState
-import net.corda.client.rpc.notUsed
 import net.corda.core.contracts.StateAndRef
 import net.corda.core.contracts.StateRef
-import net.corda.core.getOrThrow
+import net.corda.core.utilities.getOrThrow
 import net.corda.core.messaging.CordaRPCOps
 import net.corda.core.messaging.vaultQueryBy
 import net.corda.core.utilities.loggerFor
-import org.bouncycastle.asn1.x500.X500Name
+import net.corda.core.identity.CordaX500Name
 import org.slf4j.Logger
 import javax.ws.rs.*
 import javax.ws.rs.core.MediaType
 import javax.ws.rs.core.Response
 
-val NOTARY_NAME = "CN=Controller,O=R3,L=London,C=UK"
+val NOTARY_NAME = "Controller"
+val NETWORK_MAP_NAME = "Network Map Service"
 
 // This API is accessible from /api/example. All paths specified below are relative to it.
 @Path("example")
 class ExampleApi(val services: CordaRPCOps) {
-    private val myLegalName: X500Name = services.nodeIdentity().legalIdentity.name
+    private val myLegalName: CordaX500Name = services.nodeInfo().legalIdentities.first().name
 
     companion object {
         private val logger: Logger = loggerFor<ExampleApi>()
@@ -43,12 +43,12 @@ class ExampleApi(val services: CordaRPCOps) {
     @GET
     @Path("peers")
     @Produces(MediaType.APPLICATION_JSON)
-    fun getPeers(): Map<String, List<X500Name>> {
-        val (nodeInfo, nodeUpdates) = services.networkMapUpdates()
-        nodeUpdates.notUsed()
+    fun getPeers(): Map<String, List<CordaX500Name>> {
+        val nodeInfo = services.networkMapSnapshot()
         return mapOf("peers" to nodeInfo
-                .map { it.legalIdentity.name }
-                .filter { it != myLegalName && it.toString() != NOTARY_NAME })
+                .map { it.legalIdentities.first().name }
+                //filter out myself, notary and eventual network map started by driver
+                .filter { it != myLegalName && it.organisation != NOTARY_NAME && it.organisation != NETWORK_MAP_NAME })
     }
 
     /**
@@ -75,21 +75,17 @@ class ExampleApi(val services: CordaRPCOps) {
      */
     @PUT
     @Path("{counterParty}/{importerBank}/issue-bl")
-    fun issueBL(bl: BL, @PathParam("counterParty") shippingCompanyName: X500Name,
-                @PathParam("importerBank") importerBankName: X500Name): Response {
-        val shippingCommpany = services.partyFromX500Name(shippingCompanyName)
-        if (shippingCommpany == null) {
-            return Response.status(Response.Status.BAD_REQUEST).build()
-        }
+    fun issueBL(bl: BL, @PathParam("counterParty") shippingCompanyName: CordaX500Name,
+                @PathParam("importerBank") importerBankName: CordaX500Name): Response {
+        val shippingCommpany = services.wellKnownPartyFromX500Name(shippingCompanyName) ?:
+                return Response.status(Response.Status.BAD_REQUEST).entity("Party named $shippingCompanyName cannot be found.\n").build()
 
-        val importerBank = services.partyFromX500Name(importerBankName)
-        if (importerBank == null) {
-            return Response.status(Response.Status.BAD_REQUEST).build()
-        }
+        val importerBank = services.wellKnownPartyFromX500Name(importerBankName) ?:
+                return Response.status(Response.Status.BAD_REQUEST).entity("Party named $importerBankName cannot be found.\n").build()
 
         val state = BLState(
                 bl,
-                services.nodeIdentity().legalIdentity,
+                services.nodeInfo().legalIdentities.first(),
                 shippingCommpany,
                 importerBank,
                 shippingCommpany)

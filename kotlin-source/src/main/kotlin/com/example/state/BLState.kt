@@ -11,8 +11,6 @@ import net.corda.core.identity.Party
 import net.corda.core.schemas.MappedSchema
 import net.corda.core.schemas.PersistentState
 import net.corda.core.schemas.QueryableState
-import net.corda.core.crypto.keys
-import java.security.PublicKey
 
 /**
  * The state object recording bl agreements between two parties.
@@ -33,15 +31,8 @@ data class BLState(val bl: BL,
                    override val linearId: UniqueIdentifier = UniqueIdentifier()
                    ): LinearState, QueryableState {
 
-    override val contract get() = BLContract()
-
     /** The public keys of the involved parties. */
     override val participants: List<AbstractParty> get() = listOf(owner)
-
-    /** Tells the vault to track a state if we are one of the parties involved. */
-    override fun isRelevant(ourKeys: Set<PublicKey>) = ourKeys.intersect(participants.flatMap { it.owningKey.keys }).isNotEmpty()
-
-    fun withNewOwner(newOwner: Party) = copy(owner = newOwner)
 
     override fun generateMappedObject(schema: MappedSchema): PersistentState {
         return when (schema) {
@@ -58,4 +49,6 @@ data class BLState(val bl: BL,
     }
 
     override fun supportedSchemas(): Iterable<MappedSchema> = listOf(BLSchemaV1)
+
+    fun withNewOwner(newOwner: Party) = copy(owner = newOwner)
 }
