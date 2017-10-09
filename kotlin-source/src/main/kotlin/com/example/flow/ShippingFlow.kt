@@ -4,12 +4,10 @@ import co.paralleluniverse.fibers.Suspendable
 import com.example.contract.BLContract
 import com.example.state.BLState
 import net.corda.core.contracts.Command
-import net.corda.core.contracts.Requirements.using
 import net.corda.core.contracts.StateAndContract
 import net.corda.core.contracts.StateRef
 import net.corda.core.contracts.requireThat
 import net.corda.core.flows.*
-import net.corda.core.identity.Party
 import net.corda.core.node.services.queryBy
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
@@ -59,14 +57,16 @@ object ShippingFlow {
 
             val blStateAndRef = blStateAndRefs[stateRef] ?: throw IllegalArgumentException("BLState with StateRef $stateRef not found.")
             val inputBL = blStateAndRef.state.data
+            //val inputBLStateAndContract = StateAndContract(inputBL, blStateAndRef.state.contract)
 
             require(serviceHub.myInfo.legalIdentities.first() == inputBL.owner) { "BL transfer can only be initiated by the BL owner." }
 
             val outputBL = inputBL.withNewOwner(inputBL.importerBank)
+            val outputBLStateAndContract = StateAndContract(outputBL, blStateAndRef.state.contract)
 
             // Generate an unsigned transaction.
             val txCommand = Command(BLContract.Commands.Move(), listOf(inputBL.shippingCompany.owningKey, inputBL.importerBank.owningKey))
-            val txBuilder = TransactionBuilder(notary).withItems(inputBL, outputBL, txCommand)
+            val txBuilder = TransactionBuilder(notary).withItems(blStateAndRef, outputBLStateAndContract, txCommand)
 
             // Stage 2.
             progressTracker.currentStep = VERIFYING_TRANSACTION
