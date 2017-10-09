@@ -81,15 +81,15 @@ object ShippingFlow {
             // This also verifies the transaction and checks the signatures.
             val otherPartyFlow = initiateFlow(inputBL.importerBank)
             progressTracker.currentStep = COLLECTING
-            val fullySignedTx = subFlow(CollectSignaturesFlow(partSignedTx, setOf(otherPartyFlow), ExampleFlow.Initiator.Companion.GATHERING_SIGS.childProgressTracker()))
+            val fullySignedTx = subFlow(CollectSignaturesFlow(partSignedTx, setOf(otherPartyFlow), COLLECTING.childProgressTracker()))
 
             // Stage 5. Notarise and record, the transaction in our vaults.
             progressTracker.currentStep = FINALISING
-            return subFlow(FinalityFlow(fullySignedTx, ExampleFlow.Initiator.Companion.FINALISING_TRANSACTION.childProgressTracker()))
+            return subFlow(FinalityFlow(fullySignedTx, FINALISING.childProgressTracker()))
         }
     }
 
-    @InitiatedBy(ShippingFlow.Initiator::class)
+    @InitiatedBy(Initiator::class)
     class Responder(val otherPartyFlow: FlowSession) : FlowLogic<SignedTransaction>() {
         @Suspendable
         override fun call(): SignedTransaction {
